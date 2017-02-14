@@ -1,0 +1,116 @@
+Machine Learning Final Project: Predicting Exercise Type
+--------------------------------------------------------
+
+##Executive Summary:
+In this analysis we will be using machine learning techniques to determine what manner each user did their exercise based on prior data from the users.
+
+##Loading in the Data and R packages:
+
+```{r setup, message=FALSE, warning = FALSE}
+set.seed(1)
+rawData = read.csv('pml-training.csv')
+quiz = read.csv('pml-testing.csv')
+library(caret);library(randomForest);library(ggplot2); library(gbm);library(plyr);
+```
+
+
+##Creating the training and test data:
+The first thing that we do is create a training and a test set with the original data.  The training set will consist of 70% of the data chosen randomly in which we will be testing any predictors on the remaining 30% for accuracy.  Models will be created all in the training set and the final model will be chosen based on the lowest error when predicted from the training set.  
+```{r}
+inTrain = createDataPartition(y = rawData$classe, p = 0.7, list = FALSE)
+training = rawData[inTrain,]; testing = rawData[-inTrain,]
+training$classe = factor(training$classe)
+testing$classe = factor(testing$classe)
+```
+
+
+##Removing variables that do not have more than one unique value:
+First lets take a look at the training data.  Here we have 13737 records to create a model with. From this we can see a couple of the variables (kurtosis_yaw_belt, skewness_yaw_belt, kurtosis_yaw_dumbell,skewness_yaw_dumbbell,amplitude_yaw_dumbell,kurtosis_yaw_forearm,skewness_yaw_forearm,amplitude_yaw_forearm) that don't have any real data (all variables either blank DIV/0! or 0.00).  Because of this, we know that those variables will have no real impact on prediction.  There are several others that are missing 13451 records (~98%), so we can create two tests, one eliminating those and another placing all blank and DIV/0 records as the median of the rest of that column.  What we also see is that X is just the row number of the original data, so that also will not be used in creating a prediction.  
+```{r include = FALSE}
+summary(training)
+```
+
+```{r}
+training= training[,-c(139,130,127,101,92,89,14,26,16,1)]
+testing = testing[,-c(139,130,127,101,92,89,14,26,16,1)]
+quiz = quiz[,-c(139,130,127,101,92,89,14,26,16,1)]
+training$user_name = factor(training$user_name)
+training$new_window = factor(training$new_window)
+training$cvtd_timestamp = as.numeric(training$cvtd_timestamp)
+testing$user_name = factor(testing$user_name)
+testing$new_window = factor(testing$new_window)
+testing$cvtd_timestamp = as.numeric(testing$cvtd_timestamp)
+quiz$user_name = factor(quiz$user_name)
+quiz$new_window = factor(quiz$new_window)
+quiz$cvtd_timestamp = as.numeric(quiz$cvtd_timestamp)
+```
+
+##Remove variables that data is almost always not collected:
+Now lets create a subset of the data where we only look at the variables that were collected for more than 2% of the records on hand.  We may be looking at some issues with small sample sizes for those many categories that we only collected a couple hundred values for (the remaining being NA or blank)
+```{r}
+b = 11
+for(i in 12:ncol(training)){
+  if(sum(training[,i]=='')+sum(training[,i]=='#DIV/0!')>13000 || sum(is.na(training[,i]))>13000){
+     b =  c(b,i)
+  }
+}
+training = training[,-b]
+testing = testing[,-b]
+quiz = quiz[,-b]
+```
+
+
+##Remove variables that are over 95% correlated to another variableL
+Now we've still got 59 different variables.  Now lets try looking at some of the correlation between variables, in this case if there is a correlation of above 0.95 between one variable and another we can remove one of those variables since it's variation is almost all explained by another variable.  Removing excess variable will help us avoid overfitting.
+```{r}
+M = abs(cor(training[,-c(1,5,59)]))
+diag(M) = 0
+which(M>0.95,arr.ind = T)
+
+training = training[,-c(10,16,14,37,52)]
+testing = testing[,-c(10,16,14,37,52)]
+quiz = quiz[,-c(10,16,14,37,52)]
+
+M2 = abs(cor(training[,-c(1,5,54)]))
+diag(M2) = 0
+which(M2>0.95,arr.ind = T)
+```
+
+
+##Testing Model Types: Recursive Partition, Random Forests, Linear Discriminant Analysis
+Now lets start running various test models (random forests, recursive partitions and linear discriminant analysis)
+```{r warning = FALSE, cache = TRUE}
+modrecursivePartition = train(classe~.,method = 'rpart', data = training)
+modrandomForest= randomForest(classe~., data = training, ntree = 1000)
+modlda = train(classe~., data = training,method = 'lda')
+pred1 = predict(modrecursivePartition,testing)
+pred2 = predict(modrandomForest,testing)
+pred3 = predict(modlda,testing)
+table(pred1,testing$classe)
+table(pred2,testing$classe)
+table(pred3,testing$classe)
+```
+
+
+##Assessing out of sample error and combining models:
+From this we can see a very high accuracy rate from the random Forests (only 8 were missclassified of the 5885).  Because of this, we think the out of sample error is about 8/5885 or approximately 0.0014  Now we can try fitting a combination of the models through a Random Forest Model with the previous 3.
+```{r cache = TRUE}
+predDF = data.frame(pred1,pred2,pred3,classe = testing$classe)
+combModFit = randomForest(classe~., data = predDF,ntree = 1000)
+predComb = predict(combModFit,predDF)
+table(predComb,testing$classe)
+```
+
+
+##Choosing model and predicting on the quiz Set
+Given the accuracy of the first model, the combination is exactly the same as the original random forest model, so that is the one we will use.  In order to be able to use all of the variables used in creating the model, we need to make sure the data types of all of the fields are the same.  To do this, we have to change the factor variables to have the same levels as the original training set, given that the smaller data of the new 20 records may not have all of the levels covered
+```{r}
+levels(quiz$user_name)=levels(training$user_name)
+levels(quiz$new_window)=levels(training$new_window)
+predquiz = predict(modrandomForest, quiz)
+predquiz
+```
+
+
+##Final Comments/Conclusion
+In order to complete the modelling, I decided to first remove as many of the variables that could be detrimental to the model.  Those that either did not have enough data or that were too related to the policy were not included in the model.  If I was unable to come up with a relatively good test accuracy, I would have tried to reimplement some of those variables, but they likely would just create more noise.  In this exercise in order to use cross validation testing, I created a training and a test set using the createDataPartition function in the caret package.  After creating the model using only the training set, I used the test set to analyze performance.  After obtaining a relatively accurate model, we can expect an out of sample error relatively similar to what we had on the test set, which is about 0.0014.
